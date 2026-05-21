@@ -1,20 +1,5 @@
 # About this App
-CarSale app lets you buy cars from other users and sell your own cars!
-
-# Link to Site
-~~http://34.148.248.82:3000~~
-- hosted on GCP(Google Cloud Platform) using e2-medium machine vm instance
-- LINK DOES NOT WORK (ran out of student credits)
-
-~~http://40.76.224.112:3000/~~
-- hosted on Azure b2 vm instance because free trial for GCP ended
-- 2024/01/22
-- LINK DOES NOT WORK (ran out of student credits)
-- Will have the site up and running again eventually
-
-~~http://carsaleapp.net~~
-- also have domain name as an alternative, but some browsers perform an infinite redirect to https, so better to use the ip address url above as it works for all browsers.
-- will get https domain name eventually because I found out a way to get a free SSL certificate via "Let's Encrypt" 
+ShiftLane lets you buy cars from other users and sell your own cars!
 
 ## Architecture:
 - React as front-end
