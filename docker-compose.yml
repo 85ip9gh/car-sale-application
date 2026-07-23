@@ -16,6 +16,10 @@ services:
     api:
       build: ./java_backend_CRUD_1/target/
       restart: always
+      environment:
+        SPRING_DATASOURCE_URL: jdbc:mysql://mysqldb:3306/${MYSQL_DATABASE:-shiftlane}
+        SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-shiftlane}
+        SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
       ports:
         - 8080:8080
       networks:
@@ -29,9 +33,10 @@ services:
       image: mysql:latest
       restart: unless-stopped
       environment:
-        MYSQL_DATABASE: pesanth
-        MYSQL_PASSWORD: man
-        MYSQL_ROOT_PASSWORD: man
+        MYSQL_DATABASE: ${MYSQL_DATABASE:-shiftlane}
+        MYSQL_USER: ${MYSQL_USER:-shiftlane}
+        MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+        MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       ports:
         - 3306:3306
       volumes:
