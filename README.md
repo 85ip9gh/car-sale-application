@@ -1,12 +1,12 @@
-# ShiftLane
+# Car Sale Application
 
-ShiftLane is an authenticated peer-to-peer car marketplace built with React, Spring Boot, and MySQL. Users can create accounts, list and manage vehicles, purchase listings, and access role-specific administration workflows through a JWT-secured REST API.
+Car Sale Application is an authenticated peer-to-peer car marketplace built with React, Spring Boot, and MySQL. Users can create accounts, list and manage vehicles, purchase listings, and access role-specific administration workflows through a JWT-secured REST API.
 
-> **Project status:** This is a historical portfolio project. Its former GCP and Azure deployments are offline, and the current runtime has not been reverified. The repository is presented as source and architecture evidence, not as a live production service.
+> **Project status:** Live at [carsale.pesanth.com](https://carsale.pesanth.com), self-hosted behind an outbound-only Cloudflare Tunnel and verified end to end on 2026-08-09. Sign in as `demo` / `demo1234` to browse the market, list a vehicle, and buy from another seller. The earlier GCP and Azure deployments are offline. See [SECURITY.md](./SECURITY.md) for credential material that was committed to this repository in earlier history.
 
-![ShiftLane marketplace](./images/Website_V4_home.jpg)
+![Car Sale Application marketplace](./images/Website_V4_home.jpg)
 
-[Technical overview](https://pesanth.com/work/shiftlane) · [Portfolio](https://pesanth.com)
+[Live site](https://carsale.pesanth.com) · [Technical overview](https://pesanth.com/work/car-sale-application) · [Portfolio](https://pesanth.com)
 
 ## What this project demonstrates
 
@@ -41,7 +41,8 @@ The React client calls a configurable API base URL. Spring Security authenticate
 ```text
 react_frontend/          React application
 java_backend_CRUD_1/    Spring Boot API
-docker-compose.yml      Historical three-service deployment model
+docker-compose.yml      Local three-service development stack
+deploy/                 Production stack for carsale.pesanth.com
 vm_docker_compose/      Historical cloud deployment material
 images/                 Interface screenshots
 ```
@@ -75,9 +76,10 @@ The client opens on `http://localhost:3000` and the API listens on `http://local
 
 ## Verification and limitations
 
-- The current technical review verified the architecture and source structure, not a live deployment.
-- The Docker Compose files document the historical deployment approach and require a backend image or build artifact before use.
-- The codebase requires a focused security review, test expansion, and dependency refresh before any public redeployment.
+- The live deployment was exercised end to end on 2026-08-09: account creation, JWT login, listing a vehicle, purchasing from another seller, security headers, and rate limiting all behaved as expected over HTTPS.
+- **Buying a car does not move money.** `CarService.changeCarUser` reassigns ownership only. It never debits the buyer, credits the seller, or clears the `selling` flag, so a purchase is free and the vehicle stays on the market.
+- The RSA signing keypair and a MySQL data directory were committed to this public repository in earlier history. Both were replaced and are trusted by nothing that runs, but they remain in Git history permanently. See [SECURITY.md](./SECURITY.md).
+- There is no automated test coverage. Verification was done by exercising the running system.
 
 ## License
 

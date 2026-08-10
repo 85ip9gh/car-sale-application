@@ -1,0 +1,120 @@
+name: carsale
+
+# Only `web` publishes a port, and it binds to an explicit address supplied by
+# app.env. The `:?` guard matters: with a bare ${BIND_ADDRESS} an empty value
+# collapses to ":8080:8080", which Docker reads as 0.0.0.0 and would expose the
+# site on the LAN. Compose refuses to start instead.
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in app.env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE in app.env}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in app.env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in app.env}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 640m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    image: carsale-api:g7
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/${MYSQL_DATABASE}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:?set APP_CORS_ALLOWED_ORIGINS in app.env}
+      # Signing keys are mounted at runtime, never baked into the image.
+      RSA_PRIVATE_KEY: file:/run/keys/private.pem
+      RSA_PUBLIC_KEY: file:/run/keys/public.pem
+      JAVA_TOOL_OPTIONS: -Djava.security.egd=file:/dev/urandom
+    volumes:
+      - ./keys:/run/keys:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -fsS http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 768m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    image: carsale-web:g7
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:?set BIND_ADDRESS in app.env}:${BIND_PORT:?set BIND_PORT in app.env}:8080"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m
+      - /var/run:size=8m
+      - /tmp:size=8m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  db-data:

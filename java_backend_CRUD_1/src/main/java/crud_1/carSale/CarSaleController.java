@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -66,18 +67,24 @@ public class CarSaleController {
 	}
 
 	/**
-	 * CommandLineRunner to save users to the database. This is useful because the 2
-	 * crucial users, sam and admin, are saved to the database when the application
-	 * starts.
-	 * 
+	 * CommandLineRunner that creates the two development accounts, sam and admin,
+	 * on startup.
+	 * <p>
+	 * Both use the password "man", and admin holds ROLE_ADMIN, which can delete
+	 * any user. That is fine on a local machine and unacceptable on a reachable
+	 * host, so this is off unless app.seed-default-users is explicitly true. It
+	 * also re-created the accounts on every boot, meaning deleting them by hand
+	 * did not keep them gone.
+	 *
 	 * @return CommandLineRunner
 	 */
 	@Bean
+	@ConditionalOnProperty(name = "app.seed-default-users", havingValue = "true")
 	CommandLineRunner commandLineRunner() {
 		return args -> {
-			User sam = userService.saveUser(new User("sam", passwordEncoder.encode("man"), "ROLE_USER", 1000000));
-			User admin = userService.saveUser(new User("admin", passwordEncoder.encode("man"), "ROLE_ADMIN", 1000000));
-			System.out.println(sam);
+			userService.saveUser(new User("sam", passwordEncoder.encode("man"), "ROLE_USER", 1000000));
+			userService.saveUser(new User("admin", passwordEncoder.encode("man"), "ROLE_ADMIN", 1000000));
+			LOG.warn("Seeded default development accounts. Never enable this on a reachable host.");
 		};
 	}
 
