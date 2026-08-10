@@ -7,8 +7,9 @@ RUN npm ci
 
 COPY react_frontend/ ./
 
-# Same-origin API: nginx proxies the API paths, so no absolute backend URL is baked in.
-ENV REACT_APP_API_BASE_URL=""
+# Empty means same-origin: nginx proxies the API paths, so no absolute backend
+# URL is baked into the bundle.
+ENV REACT_APP_API_URL=""
 ENV GENERATE_SOURCEMAP=false
 RUN npm run build
 
