@@ -4,6 +4,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -44,7 +45,12 @@ public class SecurityConfig{
 	
 	@Autowired
 	private UserService userService;
-	
+
+	// Exact public origin(s), comma separated. Set per environment; the
+	// localhost default only applies when nothing is configured.
+	@Value("${app.cors.allowed-origins:http://localhost:3000}")
+	private String allowedOrigins;
+
 	@Bean
 	PasswordEncoder passwordEncoder() {
 		 return new BCryptPasswordEncoder();
@@ -58,7 +64,9 @@ public class SecurityConfig{
 				.csrf(csrf -> csrf.disable())
 				.cors(Customizer.withDefaults())
 				.authorizeHttpRequests(auth -> auth
-						.requestMatchers("/addUser").permitAll()	
+						.requestMatchers("/addUser").permitAll()
+						// Container health check only; nginx never proxies /actuator.
+						.requestMatchers("/actuator/health").permitAll()
 						.anyRequest().authenticated())
 				.userDetailsService(userService)
 				.oauth2ResourceServer((oauth2) -> oauth2
@@ -84,12 +92,12 @@ public class SecurityConfig{
     @Bean
     CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        
-        //for GCP vm instance react app
-        configuration.setAllowedOrigins(Arrays.asList("*"));
-        
-        //for localhost environment
-        //configuration.setAllowedOrigins(Arrays.asList("http://localhost:3000"));
+
+        configuration.setAllowedOrigins(Arrays.stream(allowedOrigins.split(","))
+        		.map(String::trim)
+        		.filter(origin -> !origin.isEmpty())
+        		.toList());
+
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT","OPTIONS","PATCH", "DELETE"));
         configuration.setAllowedHeaders(List.of("Access-Control-Allow-Headers", "Authorization", "Content-Type"));
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
