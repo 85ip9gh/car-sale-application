@@ -4,6 +4,11 @@ name: carsale
 # app.env. The `:?` guard matters: with a bare ${BIND_ADDRESS} an empty value
 # collapses to ":8080:8080", which Docker reads as 0.0.0.0 and would expose the
 # site on the LAN. Compose refuses to start instead.
+#
+# Every service sets memswap_limit equal to mem_limit. Left unset, Docker
+# defaults swap to twice the memory cap, so a container could exceed its limit
+# by swapping into the host's 4 GB rather than being held to it. Nothing here
+# has a working set that should ever need swap.
 
 services:
   db:
@@ -12,6 +17,17 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # Stock MySQL defaults are sized for a real database. This one holds 64 KB
+      # of application data. performance_schema alone was measured at 229.2 MB
+      # of the container's 380 MB resident set, and the default 100M redo
+      # capacity is preallocated on disk whether or not it is ever used.
+      # Turning performance_schema off means SHOW VARIABLES replaces any query
+      # against those tables.
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --innodb-redo-log-capacity=16M
+      - --max-connections=25
+      - --table-open-cache=200
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in app.env}
       MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE in app.env}
@@ -29,7 +45,9 @@ services:
       start_period: 40s
     security_opt:
       - no-new-privileges:true
-    mem_limit: 640m
+    mem_limit: 320m
+    memswap_limit: 320m
+    cpus: 2.0
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -48,7 +66,12 @@ services:
       # Signing keys are mounted at runtime, never baked into the image.
       RSA_PRIVATE_KEY: file:/run/keys/private.pem
       RSA_PUBLIC_KEY: file:/run/keys/public.pem
-      JAVA_TOOL_OPTIONS: -Djava.security.egd=file:/dev/urandom
+      # MaxRAMPercentage has to agree with mem_limit below, so both live here
+      # rather than one in the Dockerfile. 50% of 512m is a 256 MB heap, which
+      # clears Spring Boot's ~200 MB non-heap floor inside the cap. The JVM
+      # picks SerialGC on its own at this size, which is correct here and uses
+      # less memory than G1.
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=50 -Djava.security.egd=file:/dev/urandom
     volumes:
       - ./keys:/run/keys:ro
     depends_on:
@@ -69,7 +92,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    mem_limit: 768m
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 3.0
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -108,6 +133,8 @@ services:
       - SETGID
       - DAC_OVERRIDE
     mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 1.0
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }

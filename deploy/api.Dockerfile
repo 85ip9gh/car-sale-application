@@ -21,10 +21,17 @@ RUN apt-get update \
 RUN groupadd --system --gid 10001 carsale \
  && useradd --system --uid 10001 --gid carsale --no-create-home carsale
 
-COPY --from=build /build/target/*.jar /app/app.jar
-RUN chown -R carsale:carsale /app
+# --chown on the COPY itself, not a RUN chown afterwards. A separate `RUN chown
+# -R` rewrites every file it touches into a new layer, so the jar was stored in
+# the image twice: two 54.1 MB layers for one 54.1 MB artifact.
+COPY --from=build --chown=carsale:carsale /build/target/*.jar /app/app.jar
 
 USER carsale
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=70", "-jar", "/app/app.jar"]
+# Heap sizing is deliberately NOT set here. It has to agree with the container's
+# mem_limit, and when the two live in different files they drift: this ran at
+# MaxRAMPercentage=70 against a 768m cap, which is a 564 MB heap on top of a
+# ~200 MB non-heap floor, close enough to the ceiling to be OOMKilled if the
+# heap ever filled. Both numbers now sit together in compose.yaml.
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
