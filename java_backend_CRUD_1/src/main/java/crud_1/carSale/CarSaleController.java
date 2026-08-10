@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import crud_1.carSale.entity.Car;
 import crud_1.carSale.entity.User;
@@ -50,6 +51,12 @@ public class CarSaleController {
 	 * Logger for the CarSaleController class.
 	 */
 	private static final Logger LOG = LoggerFactory.getLogger(CarSaleController.class);
+
+	/**
+	 * Ceiling on a single deposit. The money is play money, but an unbounded
+	 * deposit lets one account render the marketplace meaningless.
+	 */
+	private static final long MAX_DEPOSIT = 1_000_000L;
 
 	/**
 	 * TokenService to generate jwt token for user.
@@ -261,26 +268,40 @@ public class CarSaleController {
 	}
 
 	/**
-	 * Method to get car by price.
-	 * 
-	 * @param car's          ID
+	 * Method to buy a car. The service debits the buyer, credits the seller,
+	 * transfers ownership, and unlists the vehicle in one transaction.
+	 *
+	 * @param carID          the vehicle being bought
 	 * @param principal(i.e. current user)
 	 * @return car
 	 */
 	@PutMapping("/cars/{carID}/buy")
 	public Car buyCar(@PathVariable int carID, Principal principal) {
-		return carService.changeCarUser(userService.getUserByName(principal.getName()).get(), carID);
+		return carService.buyCar(userService.getUserByName(principal.getName()).get(), carID);
 	}
 
 	/**
 	 * Method to add funds to user's account.
-	 * 
+	 * <p>
+	 * Deposits must be positive. This used to accept any signed value, because the
+	 * browser paid for a car by depositing a negative amount; that side of a
+	 * purchase now happens inside the buy transaction, so a negative deposit has
+	 * no legitimate caller and only serves to hand someone else's balance away.
+	 *
 	 * @param deposit
 	 * @param principal
 	 * @return money added to user
 	 */
 	@PatchMapping("/users/add-money/{deposit}")
 	public long addMoneyToUser(@PathVariable long deposit, Principal principal) {
+		if (deposit <= 0) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Deposit must be positive");
+		}
+
+		if (deposit > MAX_DEPOSIT) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Deposit exceeds the maximum");
+		}
+
 		return userService.addMoney(principal.getName(), deposit);
 	}
 
