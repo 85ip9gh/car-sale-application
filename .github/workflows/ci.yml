@@ -40,10 +40,15 @@ jobs:
         env:
           REACT_APP_API_URL: ""
           CI: "false"
+          # Matches the deployed image, which ships no source maps.
+          GENERATE_SOURCEMAP: "false"
 
+      # Only the emitted JavaScript is checked, never source maps. A map keeps
+      # the original text, including the localhost fallback, even when the
+      # minifier has folded that branch away as unreachable.
       - name: Assert no backend host was baked into the bundle
         run: |
-          if grep -rlE 'localhost:8080|40\.76\.224\.112|34\.148\.248\.82' build/static/js/; then
+          if grep -rlE 'localhost:8080|40\.76\.224\.112|34\.148\.248\.82' --include='*.js' build/static/js/; then
             echo "A backend host is compiled into the bundle; the API base URL must stay same-origin."
             exit 1
           fi
