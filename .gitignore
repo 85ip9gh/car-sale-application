@@ -5,9 +5,10 @@
 .env
 react_frontend/.env.local
 
-# Local MySQL data directory. Never commit database files: they carry password
-# hashes and the server's own TLS keys.
+# MySQL data directories. Never commit database files: they carry password
+# hashes and the server's own TLS keys. Two of these were committed before.
 .db/
+**/.db/
 
 # Deployment secrets.
 deploy/app.env

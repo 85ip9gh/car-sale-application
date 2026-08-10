@@ -348,15 +348,20 @@ public class CarSaleController {
 	}
 
 	/**
-	 * method to unlist car from user's list and change car's user
-	 * 
-	 * @param username
-	 * @param id
+	 * Takes a named user's car off the market, leaving it in their inventory.
+	 * <p>
+	 * Despite the name this never unlisted anything: it reassigned the car to the
+	 * user who already owned it and left the selling flag set. It now does what it
+	 * says. No frontend calls this; the admin page uses PUT /cars/{id}/unlist.
+	 *
+	 * @param username owner of the car
+	 * @param id       the car to take off the market
 	 * @return updated car
 	 */
 	@PutMapping("/cars/unlist/users/{username}/cars/{id}")
-	public Car unlistCar(@PathVariable String username, @PathVariable int id) {
-		return carService.changeCarUser(userService.getUserByName(username).get(), id);
+	public Car unlistCarForUser(@PathVariable String username, @PathVariable int id) {
+		carService.updateSellingCar(id, false);
+		return carService.getCarById(id);
 	}
 
 	/**
