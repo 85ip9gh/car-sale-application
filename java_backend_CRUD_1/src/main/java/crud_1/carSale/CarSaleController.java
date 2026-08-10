@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import crud_1.carSale.entity.Car;
 import crud_1.carSale.entity.User;
@@ -50,6 +51,12 @@ public class CarSaleController {
 	 * Logger for the CarSaleController class.
 	 */
 	private static final Logger LOG = LoggerFactory.getLogger(CarSaleController.class);
+
+	/**
+	 * Ceiling on a single deposit. The money is play money, but an unbounded
+	 * deposit lets one account render the marketplace meaningless.
+	 */
+	private static final long MAX_DEPOSIT = 1_000_000L;
 
 	/**
 	 * TokenService to generate jwt token for user.
@@ -261,26 +268,40 @@ public class CarSaleController {
 	}
 
 	/**
-	 * Method to get car by price.
-	 * 
-	 * @param car's          ID
+	 * Method to buy a car. The service debits the buyer, credits the seller,
+	 * transfers ownership, and unlists the vehicle in one transaction.
+	 *
+	 * @param carID          the vehicle being bought
 	 * @param principal(i.e. current user)
 	 * @return car
 	 */
 	@PutMapping("/cars/{carID}/buy")
 	public Car buyCar(@PathVariable int carID, Principal principal) {
-		return carService.changeCarUser(userService.getUserByName(principal.getName()).get(), carID);
+		return carService.buyCar(userService.getUserByName(principal.getName()).get(), carID);
 	}
 
 	/**
 	 * Method to add funds to user's account.
-	 * 
+	 * <p>
+	 * Deposits must be positive. This used to accept any signed value, because the
+	 * browser paid for a car by depositing a negative amount; that side of a
+	 * purchase now happens inside the buy transaction, so a negative deposit has
+	 * no legitimate caller and only serves to hand someone else's balance away.
+	 *
 	 * @param deposit
 	 * @param principal
 	 * @return money added to user
 	 */
 	@PatchMapping("/users/add-money/{deposit}")
 	public long addMoneyToUser(@PathVariable long deposit, Principal principal) {
+		if (deposit <= 0) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Deposit must be positive");
+		}
+
+		if (deposit > MAX_DEPOSIT) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Deposit exceeds the maximum");
+		}
+
 		return userService.addMoney(principal.getName(), deposit);
 	}
 
@@ -327,15 +348,20 @@ public class CarSaleController {
 	}
 
 	/**
-	 * method to unlist car from user's list and change car's user
-	 * 
-	 * @param username
-	 * @param id
+	 * Takes a named user's car off the market, leaving it in their inventory.
+	 * <p>
+	 * Despite the name this never unlisted anything: it reassigned the car to the
+	 * user who already owned it and left the selling flag set. It now does what it
+	 * says. No frontend calls this; the admin page uses PUT /cars/{id}/unlist.
+	 *
+	 * @param username owner of the car
+	 * @param id       the car to take off the market
 	 * @return updated car
 	 */
 	@PutMapping("/cars/unlist/users/{username}/cars/{id}")
-	public Car unlistCar(@PathVariable String username, @PathVariable int id) {
-		return carService.changeCarUser(userService.getUserByName(username).get(), id);
+	public Car unlistCarForUser(@PathVariable String username, @PathVariable int id) {
+		carService.updateSellingCar(id, false);
+		return carService.getCarById(id);
 	}
 
 	/**

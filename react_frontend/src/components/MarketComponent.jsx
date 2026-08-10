@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { addMoneyToUser, buyCar, retrieveCars, retrieveMoney, unlistCar } from "../api/CarSaleApiService";
+import { buyCar, retrieveCars, retrieveMoney, unlistCar } from "../api/CarSaleApiService";
 import { useAuthContext } from "./security/AuthProvider";
 import toyota from '../images/toyota.jpg';
 import audi from '../images/audi_new.jpg';
@@ -32,15 +32,22 @@ export default function HomeComponent() {
     ).catch(error => console.log(error))
   }
 
-  async function buyCarFunction(id, price) {
+  async function buyCarFunction(id) {
     try {
+      // The API debits the buyer, pays the seller, and unlists the car in one
+      // transaction. This used to be paid for here with a negative deposit,
+      // which meant calling the buy endpoint directly got the car for free.
       await buyCar(id);
-      await addMoneyToUser(-price);
+      setPoor(false);
 
       refreshCars();
       refreshMoney();
     } catch (error) {
-      console.log(error);
+      if (error.response && error.response.status === 402) {
+        setPoor(true);
+      } else {
+        console.log(error);
+      }
     }
   }
 
@@ -165,7 +172,7 @@ export default function HomeComponent() {
                             (money < car.price) ?
                               setPoor(true)
                               :
-                              buyCarFunction(car.id, car.price)
+                              buyCarFunction(car.id)
                           }
                           } >Buy</button> </div>
                         }
