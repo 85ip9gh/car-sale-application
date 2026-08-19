@@ -1,6 +1,13 @@
 
 version: '3.8'
 
+# Local development stack. Every published port names 127.0.0.1 explicitly.
+# A bare "3000:3000" listens on 0.0.0.0, which would put the app, the API,
+# and MySQL on whatever network the host is joined to. The api service seeds
+# an admin account with the password "man", so that exposure is not
+# theoretical. Containers reach each other by service name over
+# springapimysql-net, so the loopback binding does not affect them.
+
 services:
     frontend:
       build: ./react_frontend/
@@ -8,7 +15,7 @@ services:
         - ./:/usr/src/app/
         - /usr/src/app/node_modules
       ports:
-        - 3000:3000
+        - 127.0.0.1:3000:3000
       command: npm start
       networks:
         - springapimysql-net
@@ -22,11 +29,11 @@ services:
         SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
         # Creates the sam/admin development accounts, both with the password
         # "man", on every startup. admin holds ROLE_ADMIN and can delete any
-        # user. This stack is local development only, and it publishes every
-        # port on all interfaces. Never set this in deploy/compose.yaml.
+        # user. Acceptable only because every published port in this file binds
+        # to loopback. Never set this in deploy/compose.yaml.
         SEED_DEFAULT_USERS: "true"
       ports:
-        - 8080:8080
+        - 127.0.0.1:8080:8080
       networks:
         - springapimysql-net  
       depends_on:
@@ -43,7 +50,7 @@ services:
         MYSQL_PASSWORD: ${MYSQL_PASSWORD}
         MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       ports:
-        - 3306:3306
+        - 127.0.0.1:3306:3306
       volumes:
         - .db:/var/lib/mysql
       networks:
