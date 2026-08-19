@@ -20,6 +20,11 @@ services:
         SPRING_DATASOURCE_URL: jdbc:mysql://mysqldb:3306/${MYSQL_DATABASE:-carsale}
         SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-carsale}
         SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+        # Creates the sam/admin development accounts, both with the password
+        # "man", on every startup. admin holds ROLE_ADMIN and can delete any
+        # user. This stack is local development only, and it publishes every
+        # port on all interfaces. Never set this in deploy/compose.yaml.
+        SEED_DEFAULT_USERS: "true"
       ports:
         - 8080:8080
       networks:
