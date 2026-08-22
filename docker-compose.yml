@@ -1,5 +1,10 @@
 
-version: '3.8'
+# Local development stack. Every published port names 127.0.0.1 explicitly.
+# A bare "3000:3000" listens on 0.0.0.0, which would put the app, the API,
+# and MySQL on whatever network the host is joined to. The api service seeds
+# an admin account with the password "man", so that exposure is not
+# theoretical. Containers reach each other by service name over
+# springapimysql-net, so the loopback binding does not affect them.
 
 services:
     frontend:
@@ -8,26 +13,35 @@ services:
         - ./:/usr/src/app/
         - /usr/src/app/node_modules
       ports:
-        - 3000:3000
+        - 127.0.0.1:3000:3000
       command: npm start
       networks:
         - springapimysql-net
 
     api:
-      build: ./java_backend_CRUD_1/target/
+      # deploy/api.Dockerfile compiles the jar in a Maven stage, so this
+      # needs no local JDK and no prebuilt target/. The old context,
+      # ./java_backend_CRUD_1/target/, held no Dockerfile and is gitignored,
+      # so this service could not build at all.
+      build:
+        context: .
+        dockerfile: deploy/api.Dockerfile
       restart: always
       environment:
         SPRING_DATASOURCE_URL: jdbc:mysql://mysqldb:3306/${MYSQL_DATABASE:-carsale}
         SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-carsale}
         SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+        # Creates the sam/admin development accounts, both with the password
+        # "man", on every startup. admin holds ROLE_ADMIN and can delete any
+        # user. Acceptable only because every published port in this file binds
+        # to loopback. Never set this in deploy/compose.yaml.
+        SEED_DEFAULT_USERS: "true"
       ports:
-        - 8080:8080
+        - 127.0.0.1:8080:8080
       networks:
         - springapimysql-net  
       depends_on:
         - mysqldb
-      volumes:
-        - .m2:/root/.m2
 
     mysqldb:
       image: mysql:latest
@@ -38,7 +52,11 @@ services:
         MYSQL_PASSWORD: ${MYSQL_PASSWORD}
         MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       ports:
-        - 3306:3306
+        # 3307 on the host: a stock MySQL install already owns 3306, and the
+        # collision stops the stack from starting. The api reaches the
+        # database as mysqldb:3306 over the internal network either way, so
+        # this port is only for a client on the host.
+        - 127.0.0.1:3307:3306
       volumes:
         - .db:/var/lib/mysql
       networks:
