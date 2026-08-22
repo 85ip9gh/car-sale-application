@@ -111,6 +111,28 @@ jobs:
         if: always()
         run: docker build --file deploy/web.Dockerfile --tag carsale-web:scan .
 
+      # The web image runs as a non-root user, which a build cannot prove. nginx
+      # writing its pid or its cache fails at START, not at build, so without
+      # this the gate would pass an image that never serves a request. Hardening
+      # nobody has watched run is a guess.
+      - name: Smoke test the web image actually serves
+        if: always()
+        run: |
+          set -euo pipefail
+          docker run --detach --name carsale-web-smoke --publish 18080:8080 carsale-web:scan
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail --output /dev/null http://127.0.0.1:18080/healthz; then
+              echo "web image serves /healthz as $(docker exec carsale-web-smoke id -un)"
+              docker rm --force carsale-web-smoke > /dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "web image never served /healthz. Container logs:"
+          docker logs carsale-web-smoke || true
+          docker rm --force carsale-web-smoke > /dev/null
+          exit 1
+
       - name: Trivy image scan, web
         if: always()
         uses: aquasecurity/trivy-action@v0.36.0
