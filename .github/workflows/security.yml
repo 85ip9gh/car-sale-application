@@ -1,0 +1,200 @@
+name: Security Gates
+
+# No path filters, deliberately. A supply-chain gate that skips depending on
+# which files a change touched is not a gate. Every pull request and every push
+# to main runs all three scans.
+#
+# This complements the `secrets` job in ci.yml rather than replacing it. That
+# one asserts no key or database file is TRACKED, which is a tip-of-tree check.
+# This one reads history and file contents, which is a different question.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  CHECKOV_IMAGE: "ghcr.io/bridgecrewio/checkov:3.3.13"
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --silent --show-error --fail --location --output gitleaks.tar.gz "$url"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm -f gitleaks gitleaks.tar.gz
+          gitleaks version
+
+      # Full history, not only the diff. SECURITY.md records credential material
+      # that is permanent in this repository's history, so a diff-only scan
+      # would pass while it is still reachable. Findings that are known,
+      # neutralised and documented belong in .gitleaksignore with a dated
+      # reason, which is a record of judgement. Silence is not.
+      # --redact keeps any hit out of the public run log.
+      - name: Scan git history for secrets
+        run: |
+          set -euo pipefail
+          gitleaks git . --no-banner --redact --verbose --exit-code 1 --report-format json --report-path gitleaks-report.json
+
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  deps:
+    name: Dependency and container scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ignore-unfixed is deliberately not set. A CVE with no upstream fix is
+      # allowlisted by hand in .trivyignore with a dated reason, so the
+      # judgement is recorded. Blanket-hiding unfixed findings would erase it.
+      # This covers both trees: react_frontend/package-lock.json and the Maven
+      # pom under java_backend_CRUD_1.
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+          output: trivy-fs.txt
+          trivyignores: .trivyignore
+          hide-progress: "true"
+
+      # Both images build straight from the repository root, which is the
+      # context compose uses, so there is nothing to stage.
+      - name: Build the API image
+        if: always()
+        run: docker build --file deploy/api.Dockerfile --tag carsale-api:scan .
+
+      - name: Trivy image scan, API
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: carsale-api:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+          output: trivy-image-api.txt
+          trivyignores: .trivyignore
+          hide-progress: "true"
+
+      - name: Build the web image
+        if: always()
+        run: docker build --file deploy/web.Dockerfile --tag carsale-web:scan .
+
+      - name: Trivy image scan, web
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: carsale-web:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+          output: trivy-image-web.txt
+          trivyignores: .trivyignore
+          hide-progress: "true"
+
+      # Every scan writes to a file so the reports survive as artifacts. Print
+      # them too, otherwise a failing gate says nothing in the run log.
+      - name: Print scan reports
+        if: always()
+        run: |
+          for report in trivy-fs.txt trivy-image-api.txt trivy-image-web.txt; do
+            echo "===== $report ====="
+            if [ -s "$report" ]; then
+              cat "$report"
+            else
+              echo "no findings at HIGH or CRITICAL"
+            fi
+          done
+
+      - name: Upload trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: |
+            trivy-fs.txt
+            trivy-image-api.txt
+            trivy-image-web.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  iac:
+    name: IaC misconfiguration scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Run the pinned checkov image directly rather than through the action, so
+      # the exact flags are visible here. --skip-download keeps the run offline
+      # and deterministic: nothing about this public repository is sent anywhere.
+      #
+      # Checkov has no docker_compose framework, verified against 3.3.13's own
+      # valid-framework list, so compose.yaml and the two docker-compose.yml
+      # files are not covered here and stay a manual review. github_actions is
+      # in scope instead: an unpinned action or an injectable workflow
+      # expression is a supply-chain risk in the same family.
+      #
+      # CKV_IGNORE_HIDDEN_DIRECTORIES=false is not cosmetic. Checkov skips
+      # dot-directories by default, which was proved on cube-store: a Dockerfile
+      # with no USER and no HEALTHCHECK passed cleanly inside a dot-directory
+      # and failed immediately once moved to a visible path.
+      # .devcontainer/Dockerfile is the common real case that would otherwise
+      # never be scanned. .git is skipped explicitly, since walking the object
+      # store finds nothing and costs time.
+      - name: Checkov
+        run: |
+          set -euo pipefail
+          docker run --rm --volume "$PWD:/repo" --workdir /repo \
+            --env CKV_IGNORE_HIDDEN_DIRECTORIES=false "$CHECKOV_IMAGE" \
+            --directory . \
+            --framework dockerfile kubernetes github_actions \
+            --skip-path node_modules \
+            --skip-path '^\.git/' \
+            --skip-download \
+            --compact \
+            --quiet \
+            --output cli | tee checkov-report.txt
+
+      - name: Upload checkov report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-report
+          path: checkov-report.txt
+          if-no-files-found: warn
+          retention-days: 30

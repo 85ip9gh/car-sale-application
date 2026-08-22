@@ -1,0 +1,11 @@
+# Trivy allowlist.
+#
+# One entry per line: the CVE id, then a comment giving the date it was accepted
+# and the reason. An entry with no dated reason is not allowed. Nothing is
+# silenced here because it is inconvenient, only because there is no upstream
+# fix or because the vulnerable path is provably unreachable.
+#
+# Review every entry when the dependency it covers is next upgraded.
+#
+# Format:
+#   CVE-0000-00000  # 2026-01-01 no fixed version published upstream, <package> is build-only
