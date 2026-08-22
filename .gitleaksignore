@@ -1,0 +1,60 @@
+# Gitleaks allowlist.
+#
+# One fingerprint per line, each with a dated reason. An entry with no reason is
+# not allowed. Nothing is silenced here because it is inconvenient, only because
+# the material is permanent in this repository's history AND has been shown to
+# be worthless.
+#
+# ---------------------------------------------------------------------------
+# Why an allowlist rather than a history rewrite.
+#
+# A rewrite was done on cube-store for its exposed Stripe key and it is
+# deliberately not repeated here. Measured there afterwards: GitHub pins every
+# pull request's head commit under refs/pull/*, which no force-push can reach,
+# so 102 matches stayed fetchable and only GitHub Support can purge them. What
+# actually closed that exposure was rotating the key.
+#
+# So the honest control for permanent history is: neutralise the material, then
+# record it. Everything below is neutralised. Every entry says how.
+#
+# NONE of these files is tracked at the tip or present on disk. The `secrets`
+# job in ci.yml enforces that separately and independently, and it is the check
+# that caught the second MySQL data directory when a human missed it.
+# ---------------------------------------------------------------------------
+
+# --- The JWT signing keypair. Documented in SECURITY.md. -------------------
+#
+# 2026-08-22: replaced. A new keypair was generated, the old one is used
+# nowhere, and the hosted deployment loads its keys from a host path mounted at
+# runtime rather than from the classpath. No running service trusts the old key,
+# so a token minted with it verifies against nothing.
+7ac52fff99a6bc9c769ddab2398e875508f2a4d4:java_backend_CRUD_1/src/main/resources/certification/private.pem:private-key:1
+7ac52fff99a6bc9c769ddab2398e875508f2a4d4:java_backend_CRUD_1/src/main/resources/certification/keypair.pem:private-key:1
+
+# --- Three mkcert development TLS keys. NOT in SECURITY.md before today. ----
+#
+# Found by this gate on 2026-08-22, which is the argument for the gate: the
+# hand-written SECURITY.md was incomplete, and only a tool reading the whole
+# history noticed. SECURITY.md now records them.
+#
+# All three are leaf certificates issued 2023-12-18 by a local mkcert CA on a
+# machine named Xubuntu, committed during a "HTTPS for localhost" experiment and
+# removed on 2024-01-07. Two facts make them worthless:
+#
+#   1. All three EXPIRED on 2026-03-18, five months before this entry.
+#   2. The mkcert CA private key was never committed. Only leaf keys were, and a
+#      leaf key cannot mint anything. Without the CA key nobody can issue a new
+#      certificate that any machine trusts.
+#
+# Checked, not assumed: `openssl x509 -noout -ext basicConstraints` reports no
+# extensions on install.pem, so it is a leaf and not a CA.
+
+# localhost only, and a certificate for localhost authenticates nothing remote.
+5cd4e002c90f545d00916987f93403463a143705:react_frontend/ssl/localhost-key.pem:private-key:1
+
+# Issued for the GCP host at 34.148.248.82, which is retired. That address is
+# also on the banned-strings list in ci.yml's bundle check.
+5cd4e002c90f545d00916987f93403463a143705:react_frontend/ssl-gcp/34.148.248.82-key.pem:private-key:1
+
+# The mkcert leaf pair for the same experiment, expired 2026-03-18.
+5cd4e002c90f545d00916987f93403463a143705:react_frontend/install-key.pem:private-key:1
