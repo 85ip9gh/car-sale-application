@@ -23,47 +23,60 @@ because a permanently red default branch teaches people to ignore the colour.
 
 ## One-time setup
 
-Four of these are credential or account work. Two are host work.
+Steps 1, 2, 3 and 6 are **done**, on 2026-08-23. Steps 4 and 5 are credential
+work and are the only things outstanding.
 
-1. **Create the GitLab project, empty.** No README, no `.gitignore`, no
-   licence.
+1. **DONE. Create the GitLab project, empty.** No README, no `.gitignore`, no
+   licence. `pesanth10/car-sale-application`, public, project id `85682001`.
 
-2. **Unprotect `main` on the GitLab side**, under Settings, Repository,
-   Protected branches.
+2. **DONE. Allow the mirror to force-push `main`, before `main` exists.**
 
-   This is the step the cube-store runbook got wrong, and the wrong reason is
-   worth recording because it sounds right. That runbook said not to initialise
-   with a README because the first mirror push would be a non-fast-forward.
-   **That reasoning is false**: the mirror already uses `git push --force`,
-   which absorbs a non-fast-forward without complaint. What actually refuses
-   the push is that GitLab protects the default branch at creation with force
-   push disabled, and the pre-receive hook rejects it outright:
+   The cube-store runbook says to unprotect the branch after the fact. This
+   project took a better route: a protected-branch rule for `main` with
+   `allow_force_push: true` and push access at Maintainer, created while the
+   repository was still empty. The branch stays protected against everything
+   below Maintainer, the mirror can still force-push, and the trap below never
+   gets a chance to fire.
+
+   **The trap, because it is subtle and the cube-store runbook does not cover
+   it.** That runbook said not to initialise with a README because the first
+   mirror push would be a non-fast-forward. **That reasoning is false**: the
+   mirror uses `git push --force`, which absorbs a non-fast-forward without
+   complaint. What actually refuses the push is that GitLab protects the
+   default branch **at the moment it is created**, with force push disabled,
+   and the pre-receive hook rejects it outright:
    `You are not allowed to force push code to a protected branch`.
 
-   Fix it by unprotecting the branch, **not by deleting and recreating the
-   project**, because deleting a project takes its project runners with it.
-   Leaving it unprotected is correct anyway: nothing commits to this copy and
-   the mirror force-pushes on every run by design.
+   An empty project looks like it dodges this and does not. `main` does not
+   exist yet, so the first push creates it and succeeds, because creating a
+   branch is not a force push. GitLab then protects the branch it just got,
+   and **the second mirror run fails**. A pipeline that works once and breaks
+   on the next merge is worse than one that never worked, so the rule goes in
+   first.
 
-3. **Enable the existing g7 runner on this project.** It does **not** need to
-   be registered again. The runner registered for cube-store is a project
-   runner with `locked: false`, which means it can be enabled on further
-   projects owned by the same account, under Settings, CI/CD, Runners.
+   If it ever does need fixing after the fact, unprotect the branch, **do not
+   delete and recreate the project**, because deleting a project takes its
+   project runners with it.
+
+3. **DONE. Enable the existing g7 runner on this project.** It did **not** need
+   registering again. The runner registered for cube-store is a project runner
+   with `locked: false`, which means it can be enabled on further projects
+   owned by the same account, under Settings, CI/CD, Runners.
 
    Registering a second runner would also work and is strictly worse: two
    runners on one machine competing for the same Docker daemon and the same
    Trivy cache, for no gain.
 
-4. **Create a project access token** with the `write_repository` scope at
+4. **OUTSTANDING. Create a project access token** with the `write_repository` scope at
    Maintainer role. GitLab caps the expiry at one year and offers no way to
    disable it, so **the token dies and the mirror starts failing on a date
    nobody will remember**. Write the date down when you create it.
 
-5. **Add two GitHub repository secrets** to `85ip9gh/car-sale-application`:
-   - `GITLAB_MIRROR_URL`: `https://gitlab.com/<namespace>/car-sale-application.git`
+5. **OUTSTANDING. Add two GitHub repository secrets** to `85ip9gh/car-sale-application`:
+   - `GITLAB_MIRROR_URL`: `https://gitlab.com/pesanth10/car-sale-application.git`
    - `GITLAB_TOKEN`: the token from step 4
 
-6. **Create the Maven cache directory on the runner host**, alongside the Trivy
+6. **DONE. Create the Maven cache directory on the runner host**, alongside the Trivy
    cache the other project already needs:
 
    ```
