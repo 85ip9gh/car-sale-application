@@ -1,6 +1,6 @@
 # Deployment
 
-Production stack for `carsale.pesanth.com`, running on the `g7-server` host.
+Production stack for `carsale.pesanth.com`, running on the `host-b` host.
 
 ## Shape
 
