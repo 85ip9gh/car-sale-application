@@ -266,6 +266,13 @@ jobs:
       # in scope instead: an unpinned action or an injectable workflow
       # expression is a supply-chain risk in the same family.
       #
+      # gitlab_ci is in scope too, so that .gitlab-ci.yml is checked on the
+      # side that reviews changes to it. Without it a change to the GitLab
+      # pipeline merges here unscanned and is only checked once it has already
+      # landed on main and been mirrored. Be honest about the size of that
+      # framework: 14 checks against 144 from github_actions, and one of its
+      # four rules can never fire on a GitLab file at all.
+      #
       # CKV_IGNORE_HIDDEN_DIRECTORIES=false is not cosmetic. Checkov skips
       # dot-directories by default, which was proved on cube-store: a Dockerfile
       # with no USER and no HEALTHCHECK passed cleanly inside a dot-directory
@@ -279,7 +286,7 @@ jobs:
           docker run --rm --volume "$PWD:/repo" --workdir /repo \
             --env CKV_IGNORE_HIDDEN_DIRECTORIES=false "$CHECKOV_IMAGE" \
             --directory . \
-            --framework dockerfile kubernetes github_actions \
+            --framework dockerfile kubernetes github_actions gitlab_ci \
             --skip-path node_modules \
             --skip-path '^\.git/' \
             --skip-download \

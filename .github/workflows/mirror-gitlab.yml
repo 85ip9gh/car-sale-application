@@ -1,0 +1,83 @@
+name: Mirror to GitLab
+
+# GitLab pull mirroring (GitLab fetching from GitHub) is a Premium feature.
+# Verified 2026-08-20. On the free tier the push has to come from this side, so
+# this workflow is the mirror: every push to main is forwarded to GitLab, which
+# then runs .gitlab-ci.yml on its own runner.
+#
+# This is one direction only. GitHub is the source of truth and GitLab is a
+# read-only copy that exists to run a pipeline. Nothing is ever merged on the
+# GitLab side, so there is no divergence to reconcile. The GitLab default
+# branch is left UNPROTECTED on purpose: it is a copy nothing commits to, and
+# this workflow force-pushes on every run by design. A protected default branch
+# refuses that push outright, which is what blocked cube-store's first mirror
+# on 2026-08-23.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A second push while the first is still mirroring would race on the same
+  # remote ref. Queue instead, and do not cancel: a cancelled mirror leaves
+  # GitLab a commit behind with nothing to retry it.
+  group: mirror-gitlab
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Push to GitLab
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The GitLab-side secret gate scans history, so a shallow clone here
+      # would arrive there truncated and the gate would pass on an incomplete
+      # tree. This repository's SECURITY.md records material that is permanent
+      # in that history, so the full clone is the point rather than a detail.
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Skip cleanly rather than fail red while the GitLab project does not yet
+      # exist or its token has lapsed. A mirror that breaks every push to main
+      # is worse than no mirror, because a permanently red main teaches people
+      # to ignore the colour. The project access token expires 2027-08-22 at
+      # the latest, which is GitLab's cap, so this path is not hypothetical.
+      - name: Check the mirror is configured
+        id: configured
+        env:
+          GITLAB_MIRROR_URL: ${{ secrets.GITLAB_MIRROR_URL }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GITLAB_MIRROR_URL}" ] || [ -z "${GITLAB_TOKEN}" ]; then
+            echo "GITLAB_MIRROR_URL or GITLAB_TOKEN is unset; skipping the mirror."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The token is assembled into the URL at push time and never written to a
+      # remote in .git/config, so it cannot be read back out of the workspace
+      # by a later step. `set +x` guards against the URL being echoed on trace.
+      - name: Push main and tags
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          GITLAB_MIRROR_URL: ${{ secrets.GITLAB_MIRROR_URL }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +x
+          host_path="${GITLAB_MIRROR_URL#https://}"
+          # --force because GitLab holds a copy, not a branch anyone commits
+          # to. Not --mirror: that would push every ref this checkout happens
+          # to hold and delete anything on the far side it does not, which is a
+          # destructive default for something whose only job is to carry main.
+          git push --force "https://oauth2:${GITLAB_TOKEN}@${host_path}" HEAD:refs/heads/main
+          git push --force --tags "https://oauth2:${GITLAB_TOKEN}@${host_path}"
+          echo "mirrored $(git rev-parse --short HEAD) to GitLab"

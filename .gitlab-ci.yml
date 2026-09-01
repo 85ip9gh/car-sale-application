@@ -1,0 +1,483 @@
+# GitLab port of .github/workflows/security.yml.
+#
+# The same three gates, the same pinned scanner versions, the same thresholds,
+# and the same two smoke tests. This file exists so the gates are demonstrably
+# not a GitHub Actions trick, and so the pipeline runs on hardware that costs
+# nothing to run it on.
+#
+# No path filters, deliberately, exactly as on GitHub. A supply-chain gate that
+# skips depending on which files a change touched is not a gate.
+#
+# RUNNER: the self-hosted shell runner on g7, tagged `g7`, the same one
+# cube-store uses. It is a project runner and it was NOT locked to that
+# project, so it was enabled here rather than registered again. Shell rather
+# than the docker executor for one concrete reason: the image gates build from
+# the repository and then RUN the result, and with the docker executor the host
+# daemon cannot see paths or publish ports for a context that exists only
+# inside the job container. The alternative is a privileged docker-in-docker
+# service, which is a poor thing to introduce in the name of supply-chain
+# security. The cost is recorded rather than hidden: job scripts run directly
+# on g7 and the runner user is in the `docker` group, which is root-equivalent
+# on that host. Fine for a repository with one author, never for anything
+# taking merge requests from strangers.
+#
+# The runner is configured `concurrent = 1`, so this pipeline and cube-store's
+# queue rather than overlap. Names below are still pipeline-scoped, because
+# that setting is one edit away from being untrue and the production car-sale
+# stack runs on this same host.
+#
+# Self-hosted also means the 400 shared-runner minutes a month on GitLab Free
+# are never touched. Self-hosted runners consume zero of that quota.
+#
+# HOST PREREQUISITES, one time, alongside the /var/cache/trivy that cube-store
+# already needs:
+#   sudo mkdir -p /var/cache/maven && sudo chown gitlab-runner:gitlab-runner /var/cache/maven
+# The runner host also needs docker, curl, git, tar, openssl and python3.
+#
+# FIVE THINGS DIFFER FROM THE GITHUB FILE, EACH BECAUSE A REHEARSAL ON THE REAL
+# RUNNER PROVED THEY HAD TO:
+#
+# 1. Every scanner report is written by a SHELL REDIRECT, never by the
+#    scanner's own --output flag. See the comment on the deps job.
+# 2. Every container, network and image name carries $CI_PIPELINE_ID, and the
+#    smoke tests bind an EPHEMERAL LOOPBACK PORT instead of a fixed one. On a
+#    throwaway Actions VM a hardcoded 18080 is free by definition. On a shared
+#    home server that also serves the production stack it is neither free by
+#    definition nor private.
+# 3. The dependency scan runs --offline-scan against a PRE-POPULATED Maven
+#    cache, and then asserts how much it examined. See the deps job.
+# 4. The image scans carry --timeout 15m, because the first Java image scan on
+#    a host downloads Trivy's Java DB and the default 5 minutes is not enough.
+# 5. No step uses `exit 0` to mean "this check passed". GitLab runs the whole
+#    job as ONE shell script, so an `exit 0` borrowed from a GitHub step would
+#    end the entire job green with every later gate unrun. Success is carried
+#    in a flag variable and the loops `break`.
+
+stages:
+  - security
+
+variables:
+  # GitLab shallow-clones by default. That is the single most important line in
+  # this file. gitleaks scans history, this repository's SECURITY.md records
+  # credential material that is permanent in that history, and a truncated
+  # clone would let the gate pass while the material is still reachable in a
+  # public repository. GitHub needed `fetch-depth: 0` for the same reason; here
+  # it is GIT_DEPTH.
+  GIT_DEPTH: "0"
+  # Clone rather than reuse the workspace. A shell runner keeps its build
+  # directory between jobs, and a scan that reads leftover files from an
+  # earlier run is reporting on something other than the commit under test.
+  GIT_STRATEGY: clone
+  GITLEAKS_VERSION: "8.30.1"
+  CHECKOV_IMAGE: "ghcr.io/bridgecrewio/checkov:3.3.13"
+  TRIVY_IMAGE: "aquasec/trivy:0.74.0"
+  MAVEN_IMAGE: "maven:3.9-eclipse-temurin-21"
+  MYSQL_IMAGE: "mysql:8.0"
+  # Trivy re-downloads its vulnerability database on every cold start. On a
+  # self-hosted runner that is wasted bandwidth and a needless dependency on
+  # the database host being up, so it is cached on the machine.
+  TRIVY_CACHE_DIR: "/var/cache/trivy"
+  # Read by the dependency gate and populated by it. See that job for why an
+  # empty one is dangerous rather than merely slow.
+  MAVEN_CACHE_DIR: "/var/cache/maven"
+  # Floors, not targets. A scan that examines far less than this has failed to
+  # resolve something rather than found a clean tree. Set well below the
+  # measured 77 and 36 of 2026-08-23 so ordinary dependency changes never trip
+  # them; they exist to catch a collapse, not a drift.
+  MIN_JAVA_PACKAGES: "50"
+  MIN_NPM_PACKAGES: "20"
+
+default:
+  tags:
+    - g7
+  interruptible: true
+
+.security_rules: &security_rules
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+secrets:
+  stage: security
+  <<: *security_rules
+  timeout: 15 minutes
+  script:
+    - set -euo pipefail
+    # The scanner is pinned and fetched per run rather than baked into the
+    # runner host, so the version this pipeline used is readable in this file
+    # rather than in whatever state someone left the server in. It is unpacked
+    # into the workspace instead of installed to /usr/local/bin, because the
+    # runner user is not root and does not need to be.
+    - |
+      url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+      curl --silent --show-error --fail --location --output gitleaks.tar.gz "$url"
+      tar -xzf gitleaks.tar.gz gitleaks
+      chmod 0755 gitleaks
+      ./gitleaks version
+    # Full history, not the diff, and --redact so no hit is ever printed into a
+    # job log that anyone with the project URL can read. Findings that are
+    # known, neutralised and documented live in .gitleaksignore with a dated
+    # reason, which is a record of judgement. Silence is not.
+    - ./gitleaks git . --no-banner --redact --verbose --exit-code 1 --report-format json --report-path gitleaks-report.json
+  after_script:
+    - rm -f gitleaks gitleaks.tar.gz
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - gitleaks-report.json
+
+deps:
+  stage: security
+  <<: *security_rules
+  timeout: 40 minutes
+  script:
+    - set -euo pipefail
+    # WHY THIS JOB LOOKS DIFFERENT FROM THE GITHUB ONE, AND WHY IT HAS TO.
+    #
+    # Trivy's pom analyzer resolves parent POMs and BOMs over the network, in a
+    # burst that Maven Central throttles. Measured 2026-08-23: three
+    # consecutive filesystem scans from this host all died with
+    # "429 Too Many Requests ... Retry-After: 1800", producing a ZERO-BYTE
+    # report and exit 1. That is the worst possible shape, because exit 1 is
+    # also what a real HIGH finding produces, so an outage reads as a
+    # vulnerability. It is not a bad-IP problem either: the same scan from a
+    # second, unrelated address failed the same way, while a plain curl to the
+    # very POM trivy could not fetch returned 200 from both. Maven's own client
+    # resolves this project fine, which is why the image build below works.
+    #
+    # --offline-scan stops the requests. On its own it also guts the scan:
+    # WITHOUT a local Maven repository it resolved 8 Java packages, WITH one it
+    # resolved 77, and both exited 0. Eight packages is not a smaller answer,
+    # it is a gate that found nothing to look at and said nothing about it.
+    #
+    # So the cache is populated first, and then the scan is required to prove
+    # it examined a plausible tree. Cross-checked independently: the built API
+    # image carries 75 jars, which is the same tree by a route that never
+    # touches Maven Central.
+    - |
+      docker run --rm \
+        --volume "$PWD/java_backend_CRUD_1:/src" \
+        --volume "$MAVEN_CACHE_DIR:/root/.m2" \
+        --workdir /src \
+        "$MAVEN_IMAGE" \
+        mvn -q -B -DskipTests dependency:go-offline
+      echo "maven cache populated"
+    # DO NOT REPLACE ANY SHELL REDIRECT BELOW WITH trivy's --output FLAG. It
+    # reads as the tidier option and it breaks the NEXT job. --output makes the
+    # CONTAINER create the file, that container runs as root, and the file
+    # lands root-owned inside a workspace owned by gitlab-runner. GIT_STRATEGY:
+    # clone then has the following job wipe this directory, the runner cannot
+    # chmod a file it does not own, and get_sources fails before that job's
+    # script runs at all.
+    #
+    # Proved on cube-store 2026-08-23: the iac job died on "chmod: changing
+    # permissions of trivy-image.txt: Operation not permitted" and checkov was
+    # never invoked, so the failure named the wrong gate. It is also
+    # order-dependent, since it only bites the job scheduled after this one,
+    # which makes it look intermittent.
+    #
+    # The redirects do not weaken the gate: there is no pipe, so --exit-code 1
+    # still reaches `|| STATUS=$?`, and trivy writes its logs to stderr, so each
+    # file holds the report and nothing else.
+    #
+    # ignore-unfixed is deliberately not set, matching GitHub. A CVE with no
+    # upstream fix is allowlisted by hand in .trivyignore with a dated reason,
+    # so the judgement is recorded. Blanket-hiding unfixed findings erases it.
+    # This covers both trees: react_frontend/package-lock.json and the Maven
+    # pom under java_backend_CRUD_1. The frontend tree is covered HERE AND
+    # NOWHERE ELSE: the web image is nginx plus compiled assets and carries no
+    # node_modules, so its image scan sees 71 Alpine packages and no npm at all.
+    - |
+      docker run --rm \
+        --volume "$PWD:/repo" \
+        --volume "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+        --volume "$MAVEN_CACHE_DIR:/root/.m2" \
+        --workdir /repo \
+        "$TRIVY_IMAGE" filesystem \
+        --scanners vuln \
+        --offline-scan \
+        --severity HIGH,CRITICAL \
+        --exit-code 1 \
+        --format json \
+        --list-all-pkgs \
+        --ignorefile .trivyignore \
+        --no-progress \
+        . > trivy-fs.json || FS_STATUS=$?
+      echo "${FS_STATUS:-0}" > .fs-status
+    # The coverage assertion. Rule 6 of the supply chain gates PRD says to check
+    # what a green scan examined and not only that it was green; this is that
+    # rule as a failing job rather than as advice. It runs on the host shell, so
+    # nothing it writes is root-owned.
+    - |
+      python3 - "$MIN_JAVA_PACKAGES" "$MIN_NPM_PACKAGES" <<'PY'
+      import json, sys
+      floors = {"pom": int(sys.argv[1]), "npm": int(sys.argv[2])}
+      try:
+          report = json.load(open("trivy-fs.json"))
+      except Exception as error:
+          sys.exit("coverage check: trivy-fs.json is unreadable (%s). The scan did not "
+                   "run, whatever its exit code said." % error)
+      seen, vulns = {}, 0
+      for result in report.get("Results") or []:
+          kind = result.get("Type", "?")
+          seen[kind] = seen.get(kind, 0) + len(result.get("Packages") or [])
+          vulns += len(result.get("Vulnerabilities") or [])
+          print("  examined %-46s type=%-6s packages=%d" % (
+              result.get("Target", "?")[:46], kind, len(result.get("Packages") or [])))
+      print("  vulnerabilities at HIGH or CRITICAL: %d" % vulns)
+      short = [(k, seen.get(k, 0), f) for k, f in floors.items() if seen.get(k, 0) < f]
+      if short:
+          for kind, found, floor in short:
+              print("  COVERAGE FAILURE: %s resolved %d packages, floor is %d" % (kind, found, floor))
+          sys.exit("The dependency gate examined too little to be a gate. This is what a "
+                   "cold Maven cache looks like: exit 0 over almost nothing.")
+      print("  coverage ok")
+      PY
+    # Both images build straight from the repository root, which is the context
+    # compose uses, so there is nothing to stage. Tags are pipeline-scoped so
+    # concurrent pipelines cannot scan or delete each other's image.
+    - docker build --file deploy/api.Dockerfile --tag "carsale-api:scan-$CI_PIPELINE_ID" .
+    # A green dependency scan says the jar contains no known-vulnerable
+    # library. It says nothing about whether the application still starts, and
+    # the Spring Boot version that produces those libraries was raised from
+    # 3.1.3 to 3.5.16 to clear them. The unit suite cannot answer this either:
+    # it needs a live MySQL, which is why ci.yml skips it.
+    #
+    # So bring up the real dependency and ask the real application. This is the
+    # difference between "the upgrade compiles" and "the upgrade runs".
+    #
+    # The signing keys are generated by the runner's own shell, outside the
+    # workspace, for the same ownership reason as the redirects above.
+    - |
+      net="carsale-smoke-$CI_PIPELINE_ID"
+      db="carsale-db-$CI_PIPELINE_ID"
+      api="carsale-api-$CI_PIPELINE_ID"
+      keys="/tmp/carsale-smoke-$CI_PIPELINE_ID"
+
+      docker network create "$net" > /dev/null
+      docker run --detach --name "$db" --network "$net" --network-alias db \
+        --env MYSQL_ROOT_PASSWORD=smokeroot \
+        --env MYSQL_DATABASE=carsale \
+        --env MYSQL_USER=carsale \
+        --env MYSQL_PASSWORD=smokepass \
+        "$MYSQL_IMAGE" > /dev/null
+
+      db_ready=0
+      for attempt in $(seq 1 60); do
+        if docker exec "$db" mysqladmin ping -h 127.0.0.1 -u root -psmokeroot --silent > /dev/null 2>&1; then
+          db_ready=1
+          break
+        fi
+        sleep 2
+      done
+      if [ "$db_ready" != "1" ]; then
+        echo "MySQL never became ready. Container logs:"
+        docker logs "$db" 2>&1 | tail -40
+        exit 1
+      fi
+
+      rm -rf "$keys"
+      mkdir -p "$keys"
+      openssl genrsa -out "$keys/keypair.pem" 2048 2> /dev/null
+      openssl rsa -in "$keys/keypair.pem" -pubout -out "$keys/public.pem" 2> /dev/null
+      openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in "$keys/keypair.pem" -out "$keys/private.pem"
+      chmod 644 "$keys"/*.pem
+
+      # --publish 127.0.0.1:: asks the kernel for a free port and binds it to
+      # loopback only. A fixed 18081 would collide with a concurrent pipeline
+      # and, worse, would expose an unauthenticated test API on the host's LAN
+      # address for as long as the job runs. Neither is a risk on a throwaway
+      # Actions VM, which is why the GitHub file can hardcode it and this one
+      # cannot: the production car-sale stack is running on this same machine.
+      docker run --detach --name "$api" --network "$net" \
+        --volume "$keys:/run/keys:ro" \
+        --env SPRING_DATASOURCE_URL='jdbc:mysql://db:3306/carsale?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC' \
+        --env SPRING_DATASOURCE_USERNAME=carsale \
+        --env SPRING_DATASOURCE_PASSWORD=smokepass \
+        --env APP_CORS_ALLOWED_ORIGINS=http://localhost \
+        --env RSA_PRIVATE_KEY=file:/run/keys/private.pem \
+        --env RSA_PUBLIC_KEY=file:/run/keys/public.pem \
+        --publish 127.0.0.1::8080 \
+        "carsale-api:scan-$CI_PIPELINE_ID" > /dev/null
+
+      port="$(docker port "$api" 8080/tcp | head -1 | sed 's/.*://')"
+      echo "API smoke test listening on 127.0.0.1:$port"
+
+      api_up=0
+      for attempt in $(seq 1 60); do
+        body="$(curl --silent --max-time 5 "http://127.0.0.1:$port/actuator/health" || true)"
+        case "$body" in
+          *'"status":"UP"'*)
+            api_up=1
+            break
+            ;;
+        esac
+        sleep 3
+      done
+      if [ "$api_up" != "1" ]; then
+        echo "API never reported UP. Container logs:"
+        docker logs "$api" 2>&1 | tail -60
+        exit 1
+      fi
+      echo "API reports UP on Spring Boot $(grep -m1 -A4 '<parent>' java_backend_CRUD_1/pom.xml | grep -oE '3\.[0-9.]+')"
+    # --timeout 15m, not the 5 minute default. The FIRST Java image scan on a
+    # host downloads Trivy's Java DB, which is separate from the vulnerability
+    # DB and is not fetched by any Node project. Measured 2026-08-23: that
+    # download took 14 minutes and the default timeout killed the scan with
+    # "context deadline exceeded" in a layer walk, which reads like a corrupt
+    # image and is not one. Warm, the same scan takes 6 seconds. The DB is
+    # cached for 3 days, so this recurs rather than happening only once.
+    - |
+      docker run --rm \
+        --volume "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+        --volume /var/run/docker.sock:/var/run/docker.sock \
+        --volume "$PWD:/repo" \
+        --workdir /repo \
+        "$TRIVY_IMAGE" image \
+        --scanners vuln \
+        --timeout 15m \
+        --severity HIGH,CRITICAL \
+        --exit-code 1 \
+        --format table \
+        --ignorefile .trivyignore \
+        --no-progress \
+        "carsale-api:scan-$CI_PIPELINE_ID" > trivy-image-api.txt || API_STATUS=$?
+      echo "${API_STATUS:-0}" > .api-status
+    - docker build --file deploy/web.Dockerfile --tag "carsale-web:scan-$CI_PIPELINE_ID" .
+    # The web image runs as a non-root user, which a build cannot prove. nginx
+    # writing its pid or its cache fails at START, not at build, so without
+    # this the gate would pass an image that never serves a request. Hardening
+    # nobody has watched run is a guess.
+    #
+    # --add-host is required, not incidental. nginx resolves every upstream at
+    # config-parse time, so default.conf's `api:8080` has to exist as a name or
+    # the master exits with "host not found in upstream" before serving
+    # anything. In the real stack compose provides it. /healthz is answered by
+    # nginx itself and never proxied, so pointing the name at loopback is
+    # enough to start.
+    - |
+      web="carsale-web-$CI_PIPELINE_ID"
+      docker run --detach --name "$web" \
+        --add-host api:127.0.0.1 \
+        --publish 127.0.0.1::8080 \
+        "carsale-web:scan-$CI_PIPELINE_ID" > /dev/null
+
+      port="$(docker port "$web" 8080/tcp | head -1 | sed 's/.*://')"
+      web_up=0
+      for attempt in $(seq 1 30); do
+        if curl --silent --fail --output /dev/null "http://127.0.0.1:$port/healthz"; then
+          web_up=1
+          break
+        fi
+        sleep 2
+      done
+      if [ "$web_up" != "1" ]; then
+        echo "web image never served /healthz. Container logs:"
+        docker logs "$web" 2>&1 | tail -40
+        exit 1
+      fi
+      echo "web image serves /healthz as $(docker exec "$web" id -un)"
+    - |
+      docker run --rm \
+        --volume "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+        --volume /var/run/docker.sock:/var/run/docker.sock \
+        --volume "$PWD:/repo" \
+        --workdir /repo \
+        "$TRIVY_IMAGE" image \
+        --scanners vuln \
+        --timeout 15m \
+        --severity HIGH,CRITICAL \
+        --exit-code 1 \
+        --format table \
+        --ignorefile .trivyignore \
+        --no-progress \
+        "carsale-web:scan-$CI_PIPELINE_ID" > trivy-image-web.txt || WEB_STATUS=$?
+      echo "${WEB_STATUS:-0}" > .web-status
+    # Every scan writes to a file so the reports survive as artifacts. Print
+    # them as well, otherwise a failing gate says nothing in the job log.
+    - |
+      for report in trivy-image-api.txt trivy-image-web.txt; do
+        echo "===== $report ====="
+        if [ -s "$report" ]; then cat "$report"; else echo "no findings at HIGH or CRITICAL"; fi
+      done
+    # Fail after all three scans have reported, not at the first one. A gate
+    # that stops at the filesystem finding hides whatever the image scans would
+    # have said, so the next run surfaces a second wave of findings that were
+    # there all along.
+    - |
+      fs=$(cat .fs-status); api=$(cat .api-status); web=$(cat .web-status)
+      if [ "$fs" != "0" ] || [ "$api" != "0" ] || [ "$web" != "0" ]; then
+        echo "gate failed: filesystem exit $fs, api image exit $api, web image exit $web"
+        exit 1
+      fi
+  after_script:
+    # Names are pipeline-scoped so this cannot reach into a concurrent
+    # pipeline's containers, and it runs whether the job passed or failed so
+    # the runner host does not accumulate a stack per pipeline.
+    - docker rm --force "carsale-api-$CI_PIPELINE_ID" "carsale-web-$CI_PIPELINE_ID" "carsale-db-$CI_PIPELINE_ID" > /dev/null 2>&1 || true
+    - docker network rm "carsale-smoke-$CI_PIPELINE_ID" > /dev/null 2>&1 || true
+    - docker image rm --force "carsale-api:scan-$CI_PIPELINE_ID" "carsale-web:scan-$CI_PIPELINE_ID" > /dev/null 2>&1 || true
+    - rm -rf "/tmp/carsale-smoke-$CI_PIPELINE_ID"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - trivy-fs.json
+      - trivy-image-api.txt
+      - trivy-image-web.txt
+
+iac:
+  stage: security
+  <<: *security_rules
+  timeout: 10 minutes
+  script:
+    - set -euo pipefail
+    # Checkov has no docker_compose framework. Verified against 3.3.13, whose
+    # valid frameworks are dockerfile, kubernetes, yaml, github_actions and
+    # others, with no compose entry among them. deploy/compose.yaml and the two
+    # docker-compose.yml files are therefore not covered by this gate and their
+    # hardening stays a manual review.
+    #
+    # gitlab_ci is in scope here where github_actions is on the other side.
+    # This file is now a supply-chain surface of its own, and a pipeline that
+    # scans everything except itself has an obvious hole in it.
+    #
+    # BE HONEST ABOUT WHAT THAT FRAMEWORK BUYS: very little. It has four checks
+    # and only one of them is worth anything here. CKV_GITLABCI_2, the
+    # double-pipeline rule, is real and was proved to block on cube-store on
+    # 2026-08-22 by planting rules matching both merge_request_event and push,
+    # which failed with exit 1. CKV_GITLABCI_3 only reports which images a job
+    # uses. CKV_GITLABCI_1 CANNOT FIRE ON THIS FILE OR ANY OTHER: reading the
+    # check out of the 3.3.13 image shows it is a CircleCI class bound to
+    # `jobs.*.steps[]` and looking for a `run` key, and a GitLab job has
+    # `script`, never `steps` or `run`. It is a permanent pass, not a clean
+    # bill of health. Compare the github_actions side, which carries 128
+    # checks. Check what a framework contains before crediting it.
+    #
+    # CKV_IGNORE_HIDDEN_DIRECTORIES=false is not cosmetic. Checkov skips
+    # dot-directories by default, which was proved on cube-store: a Dockerfile
+    # with no USER and no HEALTHCHECK passed cleanly inside a hidden directory
+    # and failed immediately once moved to a visible path. .devcontainer is the
+    # common real case that would otherwise never be scanned. .git is skipped
+    # explicitly, since walking the object store finds nothing and costs time.
+    - |
+      docker run --rm \
+        --volume "$PWD:/repo" \
+        --workdir /repo \
+        --env CKV_IGNORE_HIDDEN_DIRECTORIES=false \
+        "$CHECKOV_IMAGE" \
+        --directory . \
+        --framework dockerfile kubernetes github_actions gitlab_ci \
+        --skip-path node_modules \
+        --skip-path '^\.git/' \
+        --skip-download \
+        --compact \
+        --quiet \
+        --output cli | tee checkov-report.txt
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - checkov-report.txt
